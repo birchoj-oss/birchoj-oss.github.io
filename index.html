@@ -5,16 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Trail">
+<meta name="apple-mobile-web-app-title" content="Trail Tracker">
 <meta name="theme-color" content="#0f1117">
 <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Crect width='180' height='180' rx='40' fill='%230f1117'/%3E%3Cpath d='M40 120 L70 70 L95 100 L125 50 L150 95' stroke='%234ade80' stroke-width='10' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-<title>Trail Training</title>
+<title>Trail Tracker</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   :root {
     --bg:#0f1117; --card:#191c26; --border:#252836; --accent:#4ade80; --accentDim:#1a3a24;
     --warn:#f59e0b; --warnDim:#3a2a00; --z2:#22d3ee; --z2Dim:#0a2a33;
-    --purple:#a78bfa; --purpleDim:#2a1f44; --muted:#6b7280; --text:#e5e7eb; --textDim:#9ca3af; --red:#f87171;
+    --purple:#a78bfa; --purpleDim:#2a1f44; --orange:#fb923c; --orangeDim:#3a2410;
+    --muted:#6b7280; --text:#e5e7eb; --textDim:#9ca3af; --red:#f87171;
   }
   html,body { background:var(--bg); color:var(--text); font-family:-apple-system,system-ui,'Inter',sans-serif; }
   body { padding-bottom:env(safe-area-inset-bottom); }
@@ -46,6 +47,7 @@
          font-size:14px; font-weight:600; cursor:pointer; font-family:inherit; }
   .btn:disabled { background:var(--border); color:var(--muted); cursor:not-allowed; }
   .btn.ghost { background:var(--bg); color:var(--textDim); border:1px solid var(--border); }
+  .btn.sec { background:var(--bg); border:1px solid var(--border); }
   .seg { display:flex; gap:8px; }
   .seg button { flex:1; padding:11px 0; font-size:14px; font-weight:600; background:var(--bg);
                 color:var(--textDim); border:1px solid var(--border); border-radius:8px; cursor:pointer; font-family:inherit; }
@@ -53,17 +55,23 @@
   .bar > div { height:100%; border-radius:4px; transition:width .3s; }
   .pill { border-radius:8px; padding:8px 12px; font-size:12px; margin-bottom:12px; }
   .listrow { display:flex; justify-content:space-between; align-items:center; padding:9px 0; }
-  .ghead { padding:12px 0 12px; margin:-14px -14px 0; padding-left:16px; padding-right:16px;
-           border-bottom:1px solid var(--border); display:flex; align-items:center; gap:8px; }
+  .ghead { border-bottom:1px solid var(--border); display:flex; align-items:center; gap:8px; padding:12px 16px; }
   .dot { width:8px; height:8px; border-radius:4px; }
   .gtitle { font-size:12px; font-weight:600; letter-spacing:1px; text-transform:uppercase; }
   svg text { font-size:10px; fill:var(--muted); }
+  .modal { position:fixed; inset:0; background:rgba(0,0,0,.6); display:flex; align-items:flex-end;
+           justify-content:center; z-index:50; }
+  .sheet { background:var(--card); border-top-left-radius:18px; border-top-right-radius:18px;
+           width:100%; max-width:520px; padding:18px 16px calc(18px + env(safe-area-inset-bottom));
+           max-height:85vh; overflow-y:auto; }
 </style>
 </head>
 <body>
 <div id="app"></div>
+<div id="modal"></div>
 <script>
 const RACES = { chilterns:new Date("2026-07-11"), kent:new Date("2026-09-19") };
+const BLOCK_START = "2026-06-15";
 const PLAN = [
   {by:"2026-06-21",long:"16–18 km Z2",vol:"32–36",phase:"Chilterns build"},
   {by:"2026-06-28",long:"18–20 km (last 5 km race effort)",vol:"36–40",phase:"Chilterns build"},
@@ -97,33 +105,42 @@ function curPlan(d=new Date()){ const t=d.getTime(); for(const p of PLAN){ if(t<
 function fromDayKey(s){ const [y,m,d]=s.split("-").map(Number); return new Date(y,m-1,d,12,0,0); }
 function prettyDate(s){ return fromDayKey(s).toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"short"}); }
 function el(html){ const t=document.createElement("template"); t.innerHTML=html.trim(); return t.content.firstChild; }
+
+// prehab session storage: key prehabses-YYYY-MM-DD -> {strength:[...exercises], stretch:[...exercises]}
+function getSession(day){ return DB.get("prehabses-"+day) || {strength:null,stretch:null}; }
+function setSession(day,obj){ DB.set("prehabses-"+day,obj); }
+
 let tab = "dashboard";
 let dailySel = null;
 let dailyDraft = null;
 const wk = weekKey(), today = dayKey();
+
+function openSheet(node){ const m=document.getElementById("modal"); m.innerHTML=""; const overlay=el(`<div class="modal"></div>`); overlay.onclick=e=>{ if(e.target===overlay)closeSheet(); }; const sheet=el(`<div class="sheet"></div>`); sheet.appendChild(node); overlay.appendChild(sheet); m.appendChild(overlay); }
+function closeSheet(){ document.getElementById("modal").innerHTML=""; }
+
 function render(){
   const plan = curPlan();
   const volT = volMid(plan.vol);
   const weekData = DB.get("weekdata-"+wk) || {totalKm:0,runs:[]};
-  const prehab = DB.get("prehab-"+wk) || {};
   const targets = DB.get("targets-"+wk) || {};
   const weight = DB.get("weight-"+wk);
-  const dailyToday = DB.get("daily-"+today);
   const runs = weekData.runs||[];
   const z2 = runs.filter(r=>r.z2pct!=null);
   const avgZ2 = z2.length? Math.round(z2.reduce((a,r)=>a+r.z2pct,0)/z2.length):null;
-  const prehabCount = Object.values(prehab).filter(Boolean).length;
-  const totalPrehab = STRENGTH.length+STRETCH.length;
   const targetsHit = Object.values(targets).filter(Boolean).length;
   const weekKm = weekData.totalKm||0;
   const volPct = volT? Math.min(100,Math.round(weekKm/volT*100)):0;
+
+  // prehab streak: consecutive days with any session logged
   let streak=0;
-  for(let i=0;i<60;i++){ const d=new Date(); d.setDate(d.getDate()-i); const e=DB.get("prehabday-"+dayKey(d)); if(e&&e.count>0)streak++; else if(i===0)continue; else break; }
+  for(let i=0;i<120;i++){ const d=new Date(); d.setDate(d.getDate()-i); const s=getSession(dayKey(d)); const any=(s.strength&&s.strength.length)||(s.stretch&&s.stretch.length); if(any)streak++; else if(i===0)continue; else break; }
+
   const hist=[];
   for(let i=7;i>=0;i--){ const d=new Date(); d.setDate(d.getDate()-i*7); const dat=DB.get("weekdata-"+weekKey(d)); hist.push({k:weekKey(d),km:dat?.totalKm||0}); }
+
   const app = document.getElementById("app");
   app.innerHTML="";
-  app.appendChild(el(`<div class="header"><div class="eyebrow" style="letter-spacing:3px">Trail Training · ${plan.phase}</div><div class="title">Oliver's Dashboard</div></div>`));
+  app.appendChild(el(`<div class="header"><div class="eyebrow" style="letter-spacing:3px">Trail Tracker · ${plan.phase}</div><div class="title">Trail Tracker</div></div>`));
   const tabs = el(`<div class="tabs"></div>`);
   [["dashboard","Dashboard"],["log","Log Run"],["prehab","Prehab"],["daily","Daily"]].forEach(([t,l])=>{
     const b=el(`<button class="tab ${tab===t?'active':''}">${l}</button>`);
@@ -133,27 +150,65 @@ function render(){
   app.appendChild(tabs);
   const w=el(`<div class="wrap"></div>`);
   app.appendChild(w);
+
   if(tab==="dashboard"){
     w.appendChild(el(`<div class="grid2">
       <div class="card"><div class="eyebrow">Chilterns</div><div class="big" style="color:var(--warn);margin-top:6px">${daysUntil(RACES.chilterns)}</div><div style="font-size:11px;color:var(--textDim);margin-top:4px">days · ${weeksUntil(RACES.chilterns)}w</div><div style="font-size:10px;color:var(--textDim);margin-top:4px">22km · 11 Jul</div></div>
       <div class="card"><div class="eyebrow">Kent 50k</div><div class="big" style="color:var(--accent);margin-top:6px">${daysUntil(RACES.kent)}</div><div style="font-size:11px;color:var(--textDim);margin-top:4px">days · ${weeksUntil(RACES.kent)}w</div><div style="font-size:10px;color:var(--textDim);margin-top:4px">50km · 19 Sep</div></div>
     </div>`));
+
+    // Weekly plan: VOLUME is hero, long run secondary
     w.appendChild(el(`<div class="card" style="border-color:var(--z2);background:var(--z2Dim)">
       <div class="eyebrow" style="color:var(--z2);margin-bottom:10px">This Week's Plan</div>
-      <div style="font-size:12px;color:var(--textDim);margin-bottom:4px">Suggested long run</div>
-      <div style="font-size:18px;font-weight:700;margin-bottom:12px">${plan.long}</div>
-      <div style="display:flex;justify-content:space-between;margin-bottom:6px"><span style="font-size:12px;color:var(--textDim)">Target weekly volume</span><span style="font-size:14px;font-weight:700;color:var(--z2)">${plan.vol}${volT?' km':''}</span></div>
+      <div style="font-size:12px;color:var(--textDim);margin-bottom:2px">Target weekly volume</div>
+      <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:10px"><span style="font-size:34px;font-weight:800;color:var(--text);line-height:1">${plan.vol}</span><span style="font-size:14px;color:var(--textDim)">${volT?'km':''}</span></div>
       ${volT?`<div class="bar"><div style="width:${volPct}%;background:${volPct>=100?'var(--accent)':'var(--z2)'}"></div></div><div style="font-size:11px;color:var(--textDim);margin-top:6px">${weekKm.toFixed(1)} km logged · ${Math.max(0,volT-weekKm).toFixed(1)} km to mid-target</div>`:''}
+      <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)"><span style="font-size:11px;color:var(--textDim)">Suggested long run · </span><span style="font-size:13px;font-weight:600;color:var(--z2)">${plan.long}</span></div>
     </div>`));
+
     w.appendChild(el(`<div class="grid2">
       <div class="card" style="${streak>0?'background:var(--purpleDim);border-color:var(--purple)':''}"><div class="big" style="font-size:28px;color:var(--purple)">${streak}</div><div style="font-size:11px;color:var(--textDim);margin-top:4px">day prehab streak</div></div>
       <div class="card"><div class="eyebrow" style="margin-bottom:8px">Week on track</div><div class="big" style="font-size:28px;color:${targetsHit===TARGETS.length?'var(--accent)':'var(--text)'}">${targetsHit}<span style="font-size:16px;color:var(--textDim)">/${TARGETS.length}</span></div><div style="font-size:11px;color:var(--textDim);margin-top:4px">key sessions done</div></div>
     </div>`));
+
     w.appendChild(el(`<div class="card"><div class="eyebrow" style="margin-bottom:12px">This Week</div><div class="grid3">
       <div style="text-align:center"><div class="statval" style="color:var(--accent)">${weekKm.toFixed(1)}</div><div class="statlbl">km</div></div>
       <div style="text-align:center"><div class="statval" style="color:${avgZ2==null?'var(--muted)':avgZ2>=80?'var(--accent)':avgZ2>=60?'var(--warn)':'var(--red)'}">${avgZ2!=null?avgZ2+'%':'—'}</div><div class="statlbl">avg Z2</div></div>
       <div style="text-align:center"><div class="statval" style="color:${weight?'var(--text)':'var(--muted)'}">${weight?weight.kg:'—'}</div><div class="statlbl">kg</div></div>
     </div></div>`));
+
+    // Prehab session map across whole block
+    const start=fromDayKey(BLOCK_START), end=RACES.kent;
+    const totalDays=Math.round((end-start)/864e5)+1;
+    const cols=Math.ceil(totalDays/7);
+    const cell=13, gap=3, leftPad=4, topPad=4;
+    const gw=cols*(cell+gap), gh=7*(cell+gap);
+    let cells="";
+    for(let i=0;i<totalDays;i++){
+      const d=new Date(start); d.setDate(d.getDate()+i);
+      const col=Math.floor(i/7), rowi=i%7;
+      const s=getSession(dayKey(d));
+      const hasS=s.strength&&s.strength.length, hasT=s.stretch&&s.stretch.length;
+      let fill="var(--border)";
+      if(hasS&&hasT) fill="url(#both)";
+      else if(hasS) fill="var(--accent)";
+      else if(hasT) fill="var(--orange)";
+      const isFuture = d>new Date();
+      const op = isFuture? 0.35:1;
+      cells+=`<rect x="${leftPad+col*(cell+gap)}" y="${topPad+rowi*(cell+gap)}" width="${cell}" height="${cell}" rx="3" fill="${fill}" opacity="${op}"/>`;
+    }
+    w.appendChild(el(`<div class="card"><div class="eyebrow" style="margin-bottom:12px">Prehab Sessions · Full Block</div>
+      <svg viewBox="0 0 ${gw+leftPad*2} ${gh+topPad*2}" width="100%">
+        <defs><linearGradient id="both" x1="0" y1="0" x2="1" y2="1"><stop offset="50%" stop-color="var(--accent)"/><stop offset="50%" stop-color="var(--orange)"/></linearGradient></defs>
+        ${cells}
+      </svg>
+      <div style="display:flex;gap:16px;margin-top:12px;flex-wrap:wrap">
+        <div style="display:flex;align-items:center;gap:6px"><div class="dot" style="background:var(--accent)"></div><span style="font-size:11px;color:var(--textDim)">Strength</span></div>
+        <div style="display:flex;align-items:center;gap:6px"><div class="dot" style="background:var(--orange)"></div><span style="font-size:11px;color:var(--textDim)">Stretch & stability</span></div>
+        <div style="display:flex;align-items:center;gap:6px"><div class="dot" style="background:linear-gradient(135deg,var(--accent) 50%,var(--orange) 50%)"></div><span style="font-size:11px;color:var(--textDim)">Both</span></div>
+      </div>
+    </div>`));
+
     const sess=el(`<div class="card"><div class="eyebrow" style="margin-bottom:10px">This Week's Key Sessions</div></div>`);
     TARGETS.forEach(t=>{
       const r=el(`<div class="row"><div class="chk ${targets[t.id]?'on':''}"></div><span style="font-size:13.5px;color:${targets[t.id]?'var(--accent)':'var(--text)'};text-decoration:${targets[t.id]?'line-through':'none'}">${t.label}</span></div>`);
@@ -161,17 +216,20 @@ function render(){
       sess.appendChild(r);
     });
     w.appendChild(sess);
+
     const maxKm=Math.max(volT||0,...hist.map(h=>h.km),1);
-    const W=300,H=140,pad=24,bw=22,gap=(W-pad-hist.length*bw)/(hist.length);
+    const W=300,H=140,pad=24,bw=22,gp=(W-pad-hist.length*bw)/(hist.length);
     let bars="";
-    hist.forEach((h,i)=>{ const bh=(h.km/maxKm)*(H-pad-10); const x=pad+i*(bw+gap); const y=H-pad-bh;
+    hist.forEach((h,i)=>{ const bh=(h.km/maxKm)*(H-pad-10); const x=pad+i*(bw+gp); const y=H-pad-bh;
       bars+=`<rect x="${x}" y="${y}" width="${bw}" height="${bh}" rx="3" fill="${h.k===wk?'var(--accent)':'var(--border)'}"/><text x="${x+bw/2}" y="${H-8}" text-anchor="middle">W${i+1}</text>`; });
     const volY = volT? H-pad-(volT/maxKm)*(H-pad-10):null;
     const volLine = volT?`<line x1="${pad}" y1="${volY}" x2="${W}" y2="${volY}" stroke="var(--z2)" stroke-dasharray="4 4"/>`:'';
     w.appendChild(el(`<div class="card"><div class="eyebrow" style="margin-bottom:12px">Weekly km (8 weeks)</div><svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}">${volLine}${bars}</svg></div>`));
+
     w.appendChild(el(`<div class="card"><div class="eyebrow" style="margin-bottom:10px">Race Day Rules</div>
-      ${["HR under 155bpm first 10km (Chilterns)","HR under 150bpm first 25km (Kent)","Fuel from minute 0 on 25-min timer","Restrain descents — protect the climbs","Chilterns 2:10–2:15 · Kent sub-5:00"].map((t,i)=>`<div style="display:flex;gap:10px;padding:7px 0;${i>0?'border-top:1px solid var(--border)':''}"><span style="color:var(--accent);font-size:13px">—</span><span style="font-size:12px;color:var(--textDim);line-height:1.4">${t}</span></div>`).join('')}
+      ${["HR under 155bpm first 10km (Chilterns)","HR under 150bpm first 25km (Kent)","Fuel from minute 0 on 25-min timer","Restrain descents — protect the climbs","Chilterns 2:10–2:15 target","Kent 5:15–5:30 target · sub-5:00 on a great day"].map((t,i)=>`<div style="display:flex;gap:10px;padding:7px 0;${i>0?'border-top:1px solid var(--border)':''}"><span style="color:var(--accent);font-size:13px">—</span><span style="font-size:12px;color:var(--textDim);line-height:1.4">${t}</span></div>`).join('')}
     </div>`));
+
   } else if(tab==="log"){
     const f={km:"",mins:"",pace:"",hr:"",z2:"",notes:""};
     let logDate = today;
@@ -221,24 +279,43 @@ function render(){
       list.appendChild(el(`<div class="listrow" style="border-top:1px solid var(--border);margin-top:6px"><span style="font-size:12px;color:var(--textDim)">Total this week</span><span style="font-size:14px;font-weight:700;color:var(--accent)">${weekKm.toFixed(1)} km</span></div>`));
       w.appendChild(list);
     }
+
   } else if(tab==="prehab"){
-    w.appendChild(el(`<div class="card" style="${streak>0?'background:var(--purpleDim);border-color:var(--purple)':''}"><div style="font-size:22px;font-weight:800;color:var(--purple)">${streak} day streak</div><div style="font-size:11px;color:var(--textDim);margin-top:4px">Keep it alive — any prehab counts</div></div>`));
-    w.appendChild(el(`<div class="card"><div style="display:flex;justify-content:space-between;margin-bottom:10px"><div class="eyebrow">This Week</div><div style="font-size:13px;font-weight:600;color:${prehabCount===totalPrehab?'var(--accent)':'var(--textDim)'}">${prehabCount}/${totalPrehab}</div></div><div class="bar" style="height:6px"><div style="width:${prehabCount/totalPrehab*100}%;background:var(--accent)"></div></div></div>`));
-    function group(title,color,items){
-      const g=el(`<div class="card" style="padding:0"></div>`);
-      g.appendChild(el(`<div class="ghead" style="margin:0;border-bottom:1px solid var(--border)"><div class="dot" style="background:${color}"></div><span class="gtitle" style="color:${color}">${title}</span></div>`));
-      items.forEach((it,i)=>{
-        const r=el(`<div class="row" style="padding:13px 16px;${i>0?'border-top:1px solid var(--border)':''};${prehab[it]?'background:var(--accentDim)':''}"><div class="chk ${prehab[it]?'on':''}"></div><span style="font-size:14px;color:${prehab[it]?'var(--accent)':'var(--text)'};text-decoration:${prehab[it]?'line-through':'none'}">${it}</span></div>`);
-        r.onclick=()=>{ prehab[it]=!prehab[it]; DB.set("prehab-"+wk,prehab); const c=Object.values(prehab).filter(Boolean).length; DB.set("prehabday-"+today,{count:c}); render(); };
-        g.appendChild(r);
+    // session-based logging
+    w.appendChild(el(`<div class="card" style="${streak>0?'background:var(--purpleDim);border-color:var(--purple)':''}"><div style="font-size:22px;font-weight:800;color:var(--purple)">${streak} day streak</div><div style="font-size:11px;color:var(--textDim);margin-top:4px">Keep it alive — any session counts</div></div>`));
+
+    // log buttons
+    const logCard=el(`<div class="card"><div class="eyebrow" style="margin-bottom:12px">Log a Session</div></div>`);
+    const sBtn=el(`<button class="btn" style="margin-bottom:8px;background:var(--accent)">Log Strength Session</button>`);
+    sBtn.onclick=()=>openSessionSheet("strength");
+    const tBtn=el(`<button class="btn" style="background:var(--orange)">Log Stretch & Stability</button>`);
+    tBtn.onclick=()=>openSessionSheet("stretch");
+    logCard.appendChild(sBtn); logCard.appendChild(tBtn);
+    w.appendChild(logCard);
+
+    // recent sessions list (last 14 days that have entries)
+    const recent=[];
+    for(let i=0;i<28;i++){ const d=new Date(); d.setDate(d.getDate()-i); const dk=dayKey(d); const s=getSession(dk); if((s.strength&&s.strength.length)||(s.stretch&&s.stretch.length)) recent.push({dk,s}); }
+    if(recent.length){
+      const list=el(`<div class="card"><div class="eyebrow" style="margin-bottom:10px">Recent Sessions</div></div>`);
+      recent.slice(0,10).forEach((r,i)=>{
+        const parts=[];
+        if(r.s.strength&&r.s.strength.length) parts.push(`<span style="color:var(--accent)">Strength (${r.s.strength.length})</span>`);
+        if(r.s.stretch&&r.s.stretch.length) parts.push(`<span style="color:var(--orange)">Stretch (${r.s.stretch.length})</span>`);
+        const row=el(`<div class="listrow" style="${i>0?'border-top:1px solid var(--border)':''};cursor:pointer">
+          <div><div style="font-size:13px;font-weight:600">${fromDayKey(r.dk).toLocaleDateString("en-GB",{weekday:"short",day:"numeric",month:"short"})}</div><div style="font-size:11px;margin-top:2px">${parts.join(' · ')}</div></div>
+          <div style="font-size:18px;color:var(--muted)">›</div>
+        </div>`);
+        row.onclick=()=>openSessionSheetForDay(r.dk);
+        list.appendChild(row);
       });
-      return g;
+      w.appendChild(list);
     }
-    w.appendChild(group("Strength","var(--accent)",STRENGTH));
-    w.appendChild(group("Stretch & stability","var(--z2)",STRETCH));
+
     w.appendChild(el(`<div class="card"><div class="eyebrow" style="margin-bottom:8px">Focus areas</div>
       ${[["PFS / anterior knee","Squats · Bridges · Step-downs · Wall sits"],["IT band / glute med","Clamshells · Leg raises · Foam roll"],["Pelvic tilt","Dead bugs · Hollow holds · Couch stretch"]].map((g,i)=>`<div style="${i<2?'margin-bottom:10px':''}"><div style="font-size:12px;font-weight:600">${g[0]}</div><div style="font-size:11px;color:var(--textDim);margin-top:2px">${g[1]}</div></div>`).join('')}
     </div>`));
+
   } else if(tab==="daily"){
     const entryDay = dailySel || today;
     const saved = DB.get("daily-"+entryDay);
@@ -287,7 +364,70 @@ function render(){
     w.appendChild(exp);
   }
 }
+
+// ---- Session logging sheet ----
+function openSessionSheet(type){ openSessionSheetForDay(today, type); }
+function openSessionSheetForDay(day, forceType){
+  let sel = day;
+  const node = el(`<div></div>`);
+  function build(){
+    const cur = getSession(sel);
+    const draft = { strength:[...(cur.strength||[])], stretch:[...(cur.stretch||[])] };
+    node.innerHTML="";
+    node.appendChild(el(`<div style="font-size:16px;font-weight:700;margin-bottom:4px">${forceType?(forceType==='strength'?'Strength Session':'Stretch & Stability'):'Edit Sessions'}</div>`));
+    node.appendChild(el(`<div style="font-size:12px;color:var(--textDim);margin-bottom:14px">${prettyDate(sel)}</div>`));
+    const dF=el(`<div class="field"><label class="f">Date</label><input type="date" value="${sel}" max="${today}"></div>`);
+    dF.querySelector("input").onchange=e=>{ sel=e.target.value||today; build(); };
+    node.appendChild(dF);
+
+    const groups = forceType
+      ? [[forceType, forceType==='strength'?STRENGTH:STRETCH, forceType==='strength'?'var(--accent)':'var(--orange)']]
+      : [["strength",STRENGTH,"var(--accent)"],["stretch",STRETCH,"var(--orange)"]];
+
+    groups.forEach(([key,list,color])=>{
+      const head=el(`<div style="display:flex;justify-content:space-between;align-items:center;margin:12px 0 6px"></div>`);
+      head.appendChild(el(`<span class="gtitle" style="color:${color}">${key==='strength'?'Strength':'Stretch & stability'}</span>`));
+      const allBtn=el(`<button style="font-size:11px;color:${color};background:none;border:none;font-family:inherit;cursor:pointer">Select all</button>`);
+      allBtn.onclick=()=>{ const every=list.every(x=>draft[key].includes(x)); draft[key]= every? [] : [...list]; paint(); };
+      head.appendChild(allBtn);
+      node.appendChild(head);
+      list.forEach(item=>{
+        const r=el(`<div class="row" data-key="${key}" data-item="${item}" style="padding:11px 0"><div class="chk"></div><span style="font-size:14px">${item}</span></div>`);
+        r.onclick=()=>{ const idx=draft[key].indexOf(item); if(idx>=0)draft[key].splice(idx,1); else draft[key].push(item); paint(); };
+        node.appendChild(r);
+      });
+    });
+
+    function paint(){
+      node.querySelectorAll(".row[data-item]").forEach(r=>{
+        const key=r.getAttribute("data-key"), item=r.getAttribute("data-item");
+        const color = key==='strength'?'var(--accent)':'var(--orange)';
+        const on = draft[key].includes(item);
+        const c=r.querySelector(".chk");
+        c.className="chk"+(on?" on":"");
+        c.style.cssText = on?`background:${color};border-color:${color}`:"";
+      });
+    }
+    paint();
+
+    const save=el(`<button class="btn" style="margin-top:14px">Save Session</button>`);
+    save.onclick=()=>{
+      const merged = getSession(sel);
+      if(forceType){ merged[forceType]=draft[forceType]; }
+      else { merged.strength=draft.strength; merged.stretch=draft.stretch; }
+      setSession(sel,merged);
+      closeSheet(); render();
+    };
+    node.appendChild(save);
+    const cancel=el(`<button class="btn ghost" style="margin-top:8px">Cancel</button>`);
+    cancel.onclick=()=>closeSheet();
+    node.appendChild(cancel);
+  }
+  build();
+  openSheet(node);
+}
+
 render();
 </script>
 </body>
-</html
+</html>
