@@ -23,7 +23,7 @@
   .eyebrow { font-size:10px; color:var(--muted); letter-spacing:2px; text-transform:uppercase; }
   .title { font-size:22px; font-weight:700; letter-spacing:-0.5px; margin-top:4px; }
   .tabs { display:flex; border-bottom:1px solid var(--border); position:sticky; top:0; background:var(--bg); z-index:10; }
-  .tab { flex:1; padding:12px 0; background:none; border:none; color:var(--muted); font-size:12.5px;
+  .tab { flex:1; padding:12px 0; background:none; border:none; color:var(--muted); font-size:11.5px;
          border-bottom:2px solid transparent; cursor:pointer; font-family:inherit; }
   .tab.active { color:var(--accent); font-weight:600; border-bottom-color:var(--accent); }
   .wrap { padding:16px; display:flex; flex-direction:column; gap:14px; }
@@ -57,6 +57,12 @@
   .listrow { display:flex; justify-content:space-between; align-items:center; padding:9px 0; }
   .ghead { border-bottom:1px solid var(--border); display:flex; align-items:center; gap:8px; padding:12px 16px; }
   .dot { width:8px; height:8px; border-radius:4px; }
+  .delx { background:none; border:none; color:var(--red); font-size:24px; line-height:1; cursor:pointer; padding:8px 12px; font-family:inherit; min-width:44px; min-height:44px; }
+  .swipe { position:relative; overflow:hidden; }
+  .swipe-inner { position:relative; transition:transform .2s ease; background:var(--card); z-index:2; will-change:transform; }
+  .swipe-del { position:absolute; top:0; right:0; bottom:0; width:88px; background:var(--red); color:#fff;
+               display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:700;
+               border:none; font-family:inherit; cursor:pointer; z-index:1; }
   .gtitle { font-size:12px; font-weight:600; letter-spacing:1px; text-transform:uppercase; }
   svg text { font-size:10px; fill:var(--muted); }
   .modal { position:fixed; inset:0; background:rgba(0,0,0,.6); display:flex; align-items:flex-end;
@@ -72,6 +78,7 @@
 <script>
 const RACES = { chilterns:new Date("2026-07-11"), kent:new Date("2026-09-19") };
 const BLOCK_START = "2026-06-15";
+const WEEK1_MONDAY = "2026-06-08"; // Week 1 starts Mon 8 Jun
 const PLAN = [
   {by:"2026-06-21",long:"16–18 km Z2",vol:"32–36",phase:"Chilterns build"},
   {by:"2026-06-28",long:"18–20 km (last 5 km race effort)",vol:"36–40",phase:"Chilterns build"},
@@ -95,7 +102,9 @@ const DB = {
   get(k){ try { return JSON.parse(localStorage.getItem("tt-"+k)); } catch { return null; } },
   set(k,v){ localStorage.setItem("tt-"+k, JSON.stringify(v)); },
 };
-function weekKey(d=new Date()){ const j=new Date(d.getFullYear(),0,1); const w=Math.ceil(((d-j)/864e5+j.getDay()+1)/7); return d.getFullYear()+"-W"+w; }
+function mondayOf(d=new Date()){ const x=new Date(d.getFullYear(),d.getMonth(),d.getDate()); const day=(x.getDay()+6)%7; x.setDate(x.getDate()-day); return x; }
+function weekKey(d=new Date()){ const m=mondayOf(d); const y=m.getFullYear(),mo=String(m.getMonth()+1).padStart(2,"0"),da=String(m.getDate()).padStart(2,"0"); return "W"+y+"-"+mo+"-"+da; }
+function weekNumber(d=new Date()){ const m=mondayOf(d); const w1=mondayOf(fromDayKey(WEEK1_MONDAY)); return Math.round((m-w1)/(7*864e5))+1; }
 function dayKey(d=new Date()){ return d.toISOString().slice(0,10); }
 function daysUntil(dt){ const n=new Date(); n.setHours(0,0,0,0); return Math.max(0,Math.round((dt-n)/864e5)); }
 function weeksUntil(dt){ return (daysUntil(dt)/7).toFixed(1); }
@@ -113,8 +122,26 @@ function setSession(day,obj){ DB.set("prehabses-"+day,obj); }
 let tab = "dashboard";
 let dailySel = null;
 let dailyDraft = null;
+let histFilter = "all";
 const wk = weekKey(), today = dayKey();
 
+function makeSwipeRow(innerNode, onDelete){
+  const wrap=el(`<div class="swipe"></div>`);
+  const del=el(`<button class="swipe-del">Delete</button>`);
+  const inner=el(`<div class="swipe-inner"></div>`);
+  inner.appendChild(innerNode);
+  wrap.appendChild(del); wrap.appendChild(inner);
+  let startX=0, curX=0, open=false, dragging=false;
+  const OPEN=-88;
+  const setX=x=>{ inner.style.transform="translateX("+x+"px)"; };
+  inner.addEventListener("touchstart",e=>{ startX=e.touches[0].clientX-(open?OPEN:0); dragging=true; inner.style.transition="none"; },{passive:true});
+  inner.addEventListener("touchmove",e=>{ if(!dragging)return; curX=Math.min(0,Math.max(OPEN,e.touches[0].clientX-startX)); setX(curX); },{passive:true});
+  inner.addEventListener("touchend",()=>{ dragging=false; inner.style.transition="transform .2s ease"; open = curX < OPEN/2; setX(open?OPEN:0); });
+  // click also toggles (desktop / fallback)
+  inner.addEventListener("click",e=>{ if(Math.abs(curX)>4){ e.preventDefault(); e.stopPropagation(); } });
+  del.onclick=()=>{ onDelete(); };
+  return wrap;
+}
 function openSheet(node){ const m=document.getElementById("modal"); m.innerHTML=""; const overlay=el(`<div class="modal"></div>`); overlay.onclick=e=>{ if(e.target===overlay)closeSheet(); }; const sheet=el(`<div class="sheet"></div>`); sheet.appendChild(node); overlay.appendChild(sheet); m.appendChild(overlay); }
 function closeSheet(){ document.getElementById("modal").innerHTML=""; }
 
@@ -127,6 +154,7 @@ function render(){
   const runs = weekData.runs||[];
   const z2 = runs.filter(r=>r.z2pct!=null);
   const avgZ2 = z2.length? Math.round(z2.reduce((a,r)=>a+r.z2pct,0)/z2.length):null;
+  const paced = runs.filter(r=>r.pace); const avgPace = paced.length? paced.reduce((a,r)=>a+r.pace,0)/paced.length : null;
   const targetsHit = Object.values(targets).filter(Boolean).length;
   const weekKm = weekData.totalKm||0;
   const volPct = volT? Math.min(100,Math.round(weekKm/volT*100)):0;
@@ -136,13 +164,14 @@ function render(){
   for(let i=0;i<120;i++){ const d=new Date(); d.setDate(d.getDate()-i); const s=getSession(dayKey(d)); const any=(s.strength&&s.strength.length)||(s.stretch&&s.stretch.length); if(any)streak++; else if(i===0)continue; else break; }
 
   const hist=[];
-  for(let i=7;i>=0;i--){ const d=new Date(); d.setDate(d.getDate()-i*7); const dat=DB.get("weekdata-"+weekKey(d)); hist.push({k:weekKey(d),km:dat?.totalKm||0}); }
+  { const w1=mondayOf(fromDayKey(WEEK1_MONDAY)); const cur=mondayOf(); const nWeeks=Math.round((cur-w1)/(7*864e5))+1;
+    for(let i=0;i<Math.max(nWeeks,1);i++){ const d=new Date(w1); d.setDate(d.getDate()+i*7); const dat=DB.get("weekdata-"+weekKey(d)); hist.push({k:weekKey(d),km:dat?.totalKm||0}); } }
 
   const app = document.getElementById("app");
   app.innerHTML="";
-  app.appendChild(el(`<div class="header"><div class="eyebrow" style="letter-spacing:3px">Trail Tracker · ${plan.phase}</div><div class="title">Trail Tracker</div></div>`));
+  app.appendChild(el(`<div class="header"><div class="eyebrow" style="letter-spacing:3px">Week ${weekNumber()} · ${plan.phase}</div><div class="title">Trail Tracker</div></div>`));
   const tabs = el(`<div class="tabs"></div>`);
-  [["dashboard","Dashboard"],["log","Log Run"],["prehab","Prehab"],["daily","Daily"]].forEach(([t,l])=>{
+  [["dashboard","Dashboard"],["log","Log Run"],["prehab","Prehab"],["daily","Daily"],["history","History"]].forEach(([t,l])=>{
     const b=el(`<button class="tab ${tab===t?'active':''}">${l}</button>`);
     b.onclick=()=>{ tab=t; render(); };
     tabs.appendChild(b);
@@ -174,7 +203,7 @@ function render(){
     w.appendChild(el(`<div class="card"><div class="eyebrow" style="margin-bottom:12px">This Week</div><div class="grid3">
       <div style="text-align:center"><div class="statval" style="color:var(--accent)">${weekKm.toFixed(1)}</div><div class="statlbl">km</div></div>
       <div style="text-align:center"><div class="statval" style="color:${avgZ2==null?'var(--muted)':avgZ2>=80?'var(--accent)':avgZ2>=60?'var(--warn)':'var(--red)'}">${avgZ2!=null?avgZ2+'%':'—'}</div><div class="statlbl">avg Z2</div></div>
-      <div style="text-align:center"><div class="statval" style="color:${weight?'var(--text)':'var(--muted)'}">${weight?weight.kg:'—'}</div><div class="statlbl">kg</div></div>
+      <div style="text-align:center"><div class="statval" style="color:${avgPace?'var(--text)':'var(--muted)'};font-size:22px">${avgPace?fmtPace(avgPace):'—'}</div><div class="statlbl">avg pace</div></div>
     </div></div>`));
 
     // Prehab session map across whole block
@@ -218,20 +247,27 @@ function render(){
     w.appendChild(sess);
 
     const maxKm=Math.max(volT||0,...hist.map(h=>h.km),1);
-    const W=300,H=140,pad=24,bw=22,gp=(W-pad-hist.length*bw)/(hist.length);
-    let bars="";
-    hist.forEach((h,i)=>{ const bh=(h.km/maxKm)*(H-pad-10); const x=pad+i*(bw+gp); const y=H-pad-bh;
-      bars+=`<rect x="${x}" y="${y}" width="${bw}" height="${bh}" rx="3" fill="${h.k===wk?'var(--accent)':'var(--border)'}"/><text x="${x+bw/2}" y="${H-8}" text-anchor="middle">W${i+1}</text>`; });
-    const volY = volT? H-pad-(volT/maxKm)*(H-pad-10):null;
-    const volLine = volT?`<line x1="${pad}" y1="${volY}" x2="${W}" y2="${volY}" stroke="var(--z2)" stroke-dasharray="4 4"/>`:'';
-    w.appendChild(el(`<div class="card"><div class="eyebrow" style="margin-bottom:12px">Weekly km (8 weeks)</div><svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}">${volLine}${bars}</svg></div>`));
+    // fixed bar metrics so few weeks don't stretch; chart width grows with week count
+    const cbw=30, cgp=14, cLeft=30, cTop=18, cBot=22, cPlot=120;
+    const H=cTop+cPlot+cBot;
+    const W=Math.max(300, cLeft+hist.length*(cbw+cgp)+10);
+    let bars="", cum=0;
+    hist.forEach((h,i)=>{ cum+=h.km; const bh=(h.km/maxKm)*cPlot; const x=cLeft+i*(cbw+cgp); const y=cTop+cPlot-bh; const wnum=weekNumber(fromDayKey(h.k.slice(1)));
+      bars+=`<rect x="${x}" y="${y}" width="${cbw}" height="${bh}" rx="3" fill="${h.k===wk?'var(--accent)':'var(--border)'}"/>`;
+      bars+=`<text x="${x+cbw/2}" y="${cTop+cPlot+14}" text-anchor="middle">W${wnum}</text>`;
+      if(h.km>0) bars+=`<text x="${x+cbw/2}" y="${y-5}" text-anchor="middle" style="fill:var(--textDim);font-size:9px">${cum.toFixed(0)}</text>`;
+    });
+    const volY = volT? cTop+cPlot-(volT/maxKm)*cPlot:null;
+    const volLine = volT?`<line x1="${cLeft}" y1="${volY}" x2="${W-6}" y2="${volY}" stroke="var(--z2)" stroke-dasharray="4 4"/>`:'';
+    const totalKmAll=hist.reduce((a,h)=>a+h.km,0);
+    w.appendChild(el(`<div class="card"><div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px"><div class="eyebrow">Weekly Distance (km)</div><div style="font-size:12px;color:var(--textDim)">${totalKmAll.toFixed(0)} km total · numbers = running total</div></div><div style="overflow-x:auto;-webkit-overflow-scrolling:touch"><svg viewBox="0 0 ${W} ${H}" height="${H}" style="min-width:${W}px;max-width:100%">${volLine}${bars}</svg></div></div>`));
 
     w.appendChild(el(`<div class="card"><div class="eyebrow" style="margin-bottom:10px">Race Day Rules</div>
       ${["HR under 155bpm first 10km (Chilterns)","HR under 150bpm first 25km (Kent)","Fuel from minute 0 on 25-min timer","Restrain descents — protect the climbs","Chilterns 2:10–2:15 target","Kent 5:15–5:30 target · sub-5:00 on a great day"].map((t,i)=>`<div style="display:flex;gap:10px;padding:7px 0;${i>0?'border-top:1px solid var(--border)':''}"><span style="color:var(--accent);font-size:13px">—</span><span style="font-size:12px;color:var(--textDim);line-height:1.4">${t}</span></div>`).join('')}
     </div>`));
 
   } else if(tab==="log"){
-    const f={km:"",mins:"",pace:"",hr:"",z2:"",notes:""};
+    const f={km:"",mins:"",paceMin:"",paceSec:"",hr:"",z2:"",notes:""};
     let logDate = today;
     const card=el(`<div class="card"><div class="eyebrow" style="margin-bottom:14px">Log a Run</div></div>`);
     const dateF=el(`<div class="field"><label class="f">Date of run</label><input type="date" value="${today}" max="${today}"></div>`);
@@ -239,10 +275,15 @@ function render(){
     card.appendChild(dateF);
     const mk=(lbl,key,ph,type="number",step)=>{ const fl=el(`<div class="field"><label class="f">${lbl}</label><input type="${type}" placeholder="${ph}" ${step?`step="${step}"`:''}></div>`); const inp=fl.querySelector("input"); inp.oninput=e=>{ f[key]=e.target.value; updateHints(); }; return fl; };
     card.appendChild(mk("Distance (km)","km","18.5"));
-    card.appendChild(mk("Time (mins) — auto-calcs pace","mins","135"));
+    card.appendChild(mk("Time (minutes)","mins","135"));
     const paceHint=el(`<div class="pill" style="background:var(--z2Dim);color:var(--z2);display:none"></div>`);
     card.appendChild(paceHint);
-    card.appendChild(mk("Or enter pace manually (min/km)","pace","7.30","number","0.01"));
+    // manual pace as separate min + sec to avoid 7.30 ambiguity
+    const paceWrap=el(`<div class="field"><label class="f">Or enter pace manually (min / sec per km)</label><div style="display:flex;gap:8px;align-items:center"><input type="number" placeholder="7" inputmode="numeric" style="flex:1"><span style="color:var(--textDim)">:</span><input type="number" placeholder="30" inputmode="numeric" style="flex:1"></div></div>`);
+    const [pMin,pSec]=paceWrap.querySelectorAll("input");
+    pMin.oninput=()=>{ f.paceMin=pMin.value; updateHints(); };
+    pSec.oninput=()=>{ f.paceSec=pSec.value; updateHints(); };
+    card.appendChild(paceWrap);
     card.appendChild(mk("Avg HR (bpm)","hr","144"));
     card.appendChild(mk("Zone 2 % (Garmin)","z2","82"));
     card.appendChild(mk("Notes","notes","IT band quiet, felt strong","text"));
@@ -258,7 +299,9 @@ function render(){
     saveBtn.onclick=()=>{
       if(!f.km)return;
       const km=parseFloat(f.km), mins=f.mins?parseFloat(f.mins):null;
-      const pace=f.pace?parseFloat(f.pace):(mins?mins/km:null);
+      let pace=null;
+      if(mins && km) pace = mins/km;
+      else if(f.paceMin||f.paceSec) pace = (parseInt(f.paceMin||0)) + (parseInt(f.paceSec||0))/60;
       const targetWk = weekKey(fromDayKey(logDate));
       const wd = DB.get("weekdata-"+targetWk) || {totalKm:0,runs:[]};
       wd.totalKm=(wd.totalKm||0)+km;
@@ -271,10 +314,12 @@ function render(){
     if(runs.length){
       const list=el(`<div class="card"><div class="eyebrow" style="margin-bottom:10px">This Week's Runs</div></div>`);
       runs.forEach((r,i)=>{
-        list.appendChild(el(`<div class="listrow" style="${i>0?'border-top:1px solid var(--border)':''}">
-          <div><div style="font-size:14px;font-weight:600">${r.km} km ${r.pace?`<span style="color:var(--z2);font-weight:400;font-size:12px">· ${fmtPace(r.pace)}/km</span>`:''}</div>${r.day?`<div style="font-size:10px;color:var(--muted);margin-top:2px">${fromDayKey(r.day).toLocaleDateString("en-GB",{weekday:"short",day:"numeric",month:"short"})}</div>`:''}${r.notes?`<div style="font-size:11px;color:var(--textDim);margin-top:2px">${r.notes}</div>`:''}</div>
-          <div style="text-align:right">${r.avgHR?`<div style="font-size:12px;color:${r.avgHR<=150?'var(--accent)':'var(--warn)'}">${r.avgHR} bpm</div>`:''}${r.z2pct!=null?`<div style="font-size:12px;color:var(--z2)">${r.z2pct}% Z2</div>`:''}</div>
-        </div>`));
+        const inner=el(`<div class="listrow" style="${i>0?'border-top:1px solid var(--border)':''}">
+          <div style="flex:1"><div style="font-size:14px;font-weight:600">${r.km} km ${r.pace?`<span style="color:var(--z2);font-weight:400;font-size:12px">· ${fmtPace(r.pace)}/km</span>`:''}</div>${r.day?`<div style="font-size:10px;color:var(--muted);margin-top:2px">${fromDayKey(r.day).toLocaleDateString("en-GB",{weekday:"short",day:"numeric",month:"short"})}</div>`:''}${r.notes?`<div style="font-size:11px;color:var(--textDim);margin-top:2px">${r.notes}</div>`:''}</div>
+          <div style="text-align:right;margin-right:10px">${r.avgHR?`<div style="font-size:12px;color:${r.avgHR<=150?'var(--accent)':'var(--warn)'}">${r.avgHR} bpm</div>`:''}${r.z2pct!=null?`<div style="font-size:12px;color:var(--z2)">${r.z2pct}% Z2</div>`:''}</div>
+        </div>`);
+        const doDel=()=>{ weekData.runs.splice(i,1); weekData.totalKm=+(weekData.runs.reduce((a,x)=>a+(x.km||0),0)).toFixed(2); DB.set("weekdata-"+wk,weekData); render(); };
+        list.appendChild(makeSwipeRow(inner, doDel));
       });
       list.appendChild(el(`<div class="listrow" style="border-top:1px solid var(--border);margin-top:6px"><span style="font-size:12px;color:var(--textDim)">Total this week</span><span style="font-size:14px;font-weight:700;color:var(--accent)">${weekKm.toFixed(1)} km</span></div>`));
       w.appendChild(list);
@@ -302,12 +347,12 @@ function render(){
         const parts=[];
         if(r.s.strength&&r.s.strength.length) parts.push(`<span style="color:var(--accent)">Strength (${r.s.strength.length})</span>`);
         if(r.s.stretch&&r.s.stretch.length) parts.push(`<span style="color:var(--orange)">Stretch (${r.s.stretch.length})</span>`);
-        const row=el(`<div class="listrow" style="${i>0?'border-top:1px solid var(--border)':''};cursor:pointer">
-          <div><div style="font-size:13px;font-weight:600">${fromDayKey(r.dk).toLocaleDateString("en-GB",{weekday:"short",day:"numeric",month:"short"})}</div><div style="font-size:11px;margin-top:2px">${parts.join(' · ')}</div></div>
-          <div style="font-size:18px;color:var(--muted)">›</div>
+        const inner=el(`<div class="listrow" style="${i>0?'border-top:1px solid var(--border)':''}">
+          <div style="flex:1"><div style="font-size:13px;font-weight:600">${fromDayKey(r.dk).toLocaleDateString("en-GB",{weekday:"short",day:"numeric",month:"short"})}</div><div style="font-size:11px;margin-top:2px">${parts.join(' · ')}</div></div>
+          <div style="font-size:18px;color:var(--muted);padding:0 8px">›</div>
         </div>`);
-        row.onclick=()=>openSessionSheetForDay(r.dk);
-        list.appendChild(row);
+        inner.onclick=()=>openSessionSheetForDay(r.dk);
+        list.appendChild(makeSwipeRow(inner, ()=>{ localStorage.removeItem("tt-prehabses-"+r.dk); render(); }));
       });
       w.appendChild(list);
     }
@@ -344,7 +389,11 @@ function render(){
     saveDay.onclick=()=>{ DB.set("daily-"+entryDay,{mood:d.mood,sleep:d.sleep,knee:d.knee,note:d.note}); dailyDraft=null; render(); };
     card.appendChild(saveDay);
     w.appendChild(card);
-    if(saved) w.appendChild(el(`<div class="card" style="background:var(--accentDim);border-color:var(--accent)"><div style="font-size:13px;color:var(--accent)">Saved for ${prettyDate(entryDay)} — knee: ${saved.knee}${saved.sleep?', '+saved.sleep+'h sleep':''}</div></div>`));
+    if(saved){
+      const confCard=el(`<div class="card" style="background:var(--accentDim);border-color:var(--accent)"><div style="display:flex;justify-content:space-between;align-items:center"><div style="font-size:13px;color:var(--accent)">Saved for ${prettyDate(entryDay)} — knee: ${saved.knee}${saved.sleep?', '+saved.sleep+'h sleep':''}</div><button class="delx">×</button></div></div>`);
+      confCard.querySelector(".delx").onclick=()=>{ if(!confirm("Delete the entry for "+prettyDate(entryDay)+"?")) return; localStorage.removeItem("tt-daily-"+entryDay); dailyDraft=null; render(); };
+      w.appendChild(confCard);
+    }
     const wF=el(`<div class="card"><div class="eyebrow" style="margin-bottom:12px">Weekly Weight Check-in</div><div style="display:flex;gap:8px"><input type="number" step="0.1" placeholder="kg" style="flex:1" value="${weight?weight.kg:''}"><button class="btn" style="width:auto;padding:0 20px">Save</button></div>${weight?`<div style="font-size:12px;color:var(--textDim);margin-top:10px">Logged ${weight.kg} kg this week</div>`:''}<div style="font-size:11px;color:var(--muted);margin-top:8px">One entry per week — same day, same conditions works best.</div></div>`);
     const wInp=wF.querySelector("input");
     wF.querySelector("button").onclick=()=>{ if(!wInp.value)return; DB.set("weight-"+wk,{kg:parseFloat(wInp.value),date:new Date().toISOString()}); render(); };
@@ -362,6 +411,62 @@ function render(){
       inp.click();
     };
     w.appendChild(exp);
+  } else if(tab==="history"){
+    // Gather all activities across all stored keys
+    const acts=[];
+    for(let i=0;i<localStorage.length;i++){
+      const k=localStorage.key(i); if(!k) continue;
+      if(k.startsWith("tt-weekdata-")){
+        try{ const v=JSON.parse(localStorage.getItem(k)); (v.runs||[]).forEach((r,idx)=>{ const day=r.day||(r.date?r.date.slice(0,10):null); acts.push({type:"run",day,wkKey:k.replace("tt-weekdata-",""),idx,data:r}); }); }catch{}
+      } else if(k.startsWith("tt-prehabses-")){
+        try{ const v=JSON.parse(localStorage.getItem(k)); const day=k.replace("tt-prehabses-",""); if((v.strength&&v.strength.length)||(v.stretch&&v.stretch.length)) acts.push({type:"prehab",day,data:v}); }catch{}
+      }
+    }
+    acts.sort((a,b)=> (b.day||"").localeCompare(a.day||""));
+    const filtered = acts.filter(a=> histFilter==="all" || a.type===histFilter);
+
+    // filter bar
+    const fbar=el(`<div class="card" style="display:flex;gap:8px;padding:10px"></div>`);
+    [["all","All"],["run","Runs"],["prehab","Prehab"]].forEach(([v,l])=>{
+      const b=el(`<button style="flex:1;padding:9px 0;font-size:13px;font-weight:600;border-radius:8px;cursor:pointer;font-family:inherit;background:${histFilter===v?'var(--accent)':'var(--bg)'};color:${histFilter===v?'#000':'var(--textDim)'};border:1px solid ${histFilter===v?'var(--accent)':'var(--border)'}">${l}</button>`);
+      b.onclick=()=>{ histFilter=v; render(); };
+      fbar.appendChild(b);
+    });
+    w.appendChild(fbar);
+
+    if(!filtered.length){ w.appendChild(el(`<div class="card"><div style="font-size:13px;color:var(--textDim);text-align:center;padding:8px">No activity logged yet.</div></div>`)); }
+    else {
+      const list=el(`<div class="card"></div>`);
+      filtered.forEach((a,i)=>{
+        const dateStr = a.day? fromDayKey(a.day).toLocaleDateString("en-GB",{weekday:"short",day:"numeric",month:"short"}) : "—";
+        let main="", sub="";
+        if(a.type==="run"){
+          const r=a.data;
+          main=`<span style="color:var(--accent);font-weight:700">RUN</span> · ${r.km} km${r.pace?` · ${fmtPace(r.pace)}/km`:''}`;
+          const bits=[]; if(r.avgHR)bits.push(r.avgHR+" bpm"); if(r.z2pct!=null)bits.push(r.z2pct+"% Z2"); if(r.notes)bits.push(r.notes);
+          sub=bits.join(" · ");
+        } else {
+          const v=a.data; const p=[];
+          if(v.strength&&v.strength.length)p.push(`<span style="color:var(--accent)">Strength (${v.strength.length})</span>`);
+          if(v.stretch&&v.stretch.length)p.push(`<span style="color:var(--orange)">Stretch (${v.stretch.length})</span>`);
+          main=`<span style="color:var(--purple);font-weight:700">PREHAB</span>`;
+          sub=p.join(" · ");
+        }
+        const inner=el(`<div class="listrow" style="${i>0?'border-top:1px solid var(--border)':''}">
+          <div style="flex:1"><div style="font-size:11px;color:var(--muted);margin-bottom:2px">${dateStr}</div><div style="font-size:13px;font-weight:600">${main}</div>${sub?`<div style="font-size:11px;color:var(--textDim);margin-top:2px">${sub}</div>`:''}</div>
+        </div>`);
+        const doDel=()=>{
+          if(a.type==="run"){
+            const wd=DB.get("weekdata-"+a.wkKey); if(wd){ wd.runs.splice(a.idx,1); wd.totalKm=+(wd.runs.reduce((s,x)=>s+(x.km||0),0)).toFixed(2); DB.set("weekdata-"+a.wkKey,wd); }
+          } else {
+            localStorage.removeItem("tt-prehabses-"+a.day);
+          }
+          render();
+        };
+        list.appendChild(makeSwipeRow(inner, doDel));
+      });
+      w.appendChild(list);
+    }
   }
 }
 
@@ -426,6 +531,31 @@ function openSessionSheetForDay(day, forceType){
   build();
   openSheet(node);
 }
+
+// ---- one-time migration to Monday-start week keys ----
+function migrateWeeks(){
+  if(localStorage.getItem("tt-migrated-mon")) return;
+  // collect all runs from any weekdata-* key
+  const allRuns=[];
+  const oldKeys=[];
+  for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k && k.startsWith("tt-weekdata-")){ oldKeys.push(k); try{ const v=JSON.parse(localStorage.getItem(k)); (v.runs||[]).forEach(r=>allRuns.push(r)); }catch{} } }
+  if(oldKeys.length){
+    // wipe old weekdata
+    oldKeys.forEach(k=>localStorage.removeItem(k));
+    // re-bucket each run by its day (preferred) or date
+    allRuns.forEach(r=>{
+      const dstr = r.day || (r.date? r.date.slice(0,10) : null);
+      if(!dstr) return;
+      const wkk = weekKey(fromDayKey(dstr));
+      const cur = DB.get("weekdata-"+wkk) || {totalKm:0,runs:[]};
+      cur.runs.push(r);
+      cur.totalKm = +(cur.runs.reduce((a,x)=>a+(x.km||0),0)).toFixed(2);
+      DB.set("weekdata-"+wkk, cur);
+    });
+  }
+  localStorage.setItem("tt-migrated-mon","1");
+}
+migrateWeeks();
 
 render();
 </script>
